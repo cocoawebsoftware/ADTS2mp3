@@ -1,0 +1,965 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+
+<title>ADTS/AAC → MP3 + 002解析ツール</title>
+
+<style>
+*{
+    box-sizing:border-box;
+}
+
+body{
+    margin:0;
+    font-family:Segoe UI,sans-serif;
+    background:
+        radial-gradient(circle at top left,#182848,#0f172a 45%,#020617);
+    color:white;
+}
+
+h1{
+    text-align:center;
+    margin-top:20px;
+    color:#7df9ff;
+    text-shadow:0 0 20px cyan;
+}
+
+.container{
+    width:min(1400px,95%);
+    margin:auto;
+    padding:20px;
+}
+
+.glass{
+    background:rgba(255,255,255,0.07);
+    border:1px solid rgba(255,255,255,0.15);
+    backdrop-filter:blur(15px);
+    border-radius:20px;
+    box-shadow:
+        0 0 20px rgba(0,255,255,0.1),
+        inset 0 0 10px rgba(255,255,255,0.05);
+}
+
+.drop{
+    padding:40px;
+    text-align:center;
+    border:2px dashed #4ef;
+    cursor:pointer;
+    transition:0.2s;
+}
+
+.drop.drag{
+    background:rgba(0,255,255,0.1);
+    box-shadow:0 0 25px cyan;
+}
+
+button{
+    background:#00bcd4;
+    border:none;
+    color:white;
+    padding:12px 18px;
+    border-radius:12px;
+    font-weight:bold;
+    cursor:pointer;
+    margin:5px;
+}
+
+button:hover{
+    box-shadow:0 0 15px cyan;
+}
+
+.layout{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:20px;
+    margin-top:20px;
+}
+
+@media(max-width:900px){
+    .layout{
+        grid-template-columns:1fr;
+    }
+}
+
+.panel{
+    padding:20px;
+}
+
+.progress{
+    width:100%;
+    height:20px;
+    background:#111;
+    border-radius:20px;
+    overflow:hidden;
+    margin-top:15px;
+}
+
+.progress-bar{
+    width:0%;
+    height:100%;
+    background:linear-gradient(90deg,#00e5ff,#00ff88);
+}
+
+table{
+    width:100%;
+    border-collapse:collapse;
+    font-size:14px;
+}
+
+th,td{
+    padding:8px;
+    border-bottom:1px solid rgba(255,255,255,0.1);
+}
+
+thead{
+    background:rgba(0,255,255,0.1);
+}
+
+.log{
+    background:black;
+    color:#0f0;
+    font-family:monospace;
+    height:250px;
+    overflow:auto;
+    padding:10px;
+    border-radius:10px;
+    white-space:pre-wrap;
+}
+
+.hex{
+    background:black;
+    color:#0f0;
+    font-family:monospace;
+    height:350px;
+    overflow:auto;
+    padding:10px;
+    border-radius:10px;
+    white-space:pre;
+}
+
+input{
+    display:none;
+}
+</style>
+</head>
+
+<body>
+
+<h1>🎵 ADTS/AAC → MP3 + 002解析ツール</h1>
+
+<div class="container">
+
+<div class="glass drop" id="dropZone">
+    <h2>📂 ドラッグ＆ドロップ</h2>
+    <p>.AAC .ADTS .000 .001 .002</p>
+
+    <button onclick="fileInput.click()">
+        ファイル選択
+    </button>
+
+    <input type="file" id="fileInput" multiple>
+</div>
+
+<div style="margin-top:15px;">
+    <button id="convertBtn">🎧 MP3変換</button>
+    <button id="zipBtn">📦 ZIP保存</button>
+    <button id="clearBtn">🗑 クリア</button>
+</div>
+
+<div class="progress glass">
+    <div class="progress-bar" id="progressBar"></div>
+</div>
+
+<div class="layout">
+
+<div class="glass panel">
+
+<h2>🎼 曲一覧</h2>
+
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Title</th>
+<th>Artist</th>
+<th>Album</th>
+<th>Track</th>
+</tr>
+</thead>
+
+<tbody id="tableBody"></tbody>
+
+</table>
+
+</div>
+
+<div class="glass panel">
+
+<h2>🔍 HEXビューア</h2>
+
+<div class="hex" id="hexView"></div>
+
+</div>
+
+</div>
+
+<div class="glass panel" style="margin-top:20px;">
+
+<h2>🖥 Console</h2>
+
+<div class="log" id="log"></div>
+
+</div>
+
+</div>
+
+<!-- CDN -->
+<script src="https://cdn.jsdelivr.net/npm/jszip/dist/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jschardet/dist/jschardet.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/iconv-lite-umd@0.6.10/lib/iconv-lite-umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/browser-id3-writer/dist/browser-id3-writer.min.js"></script>
+
+<script type="module">
+
+/*
+==================================================
+ ffmpeg.wasm
+==================================================
+*/
+
+import { FFmpeg } from
+'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/+esm'
+
+import { fetchFile } from
+'https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/+esm'
+
+const ffmpeg = new FFmpeg();
+
+/*
+==================================================
+ 要素
+==================================================
+*/
+
+const dropZone =
+document.getElementById("dropZone");
+
+const fileInput =
+document.getElementById("fileInput");
+
+const logArea =
+document.getElementById("log");
+
+const tableBody =
+document.getElementById("tableBody");
+
+const hexView =
+document.getElementById("hexView");
+
+const progressBar =
+document.getElementById("progressBar");
+
+/*
+==================================================
+ 状態
+==================================================
+*/
+
+let loadedFiles = [];
+let convertedFiles = [];
+
+const zip = new JSZip();
+
+let ffmpegLoaded = false;
+
+/*
+==================================================
+ ログ
+==================================================
+*/
+
+function log(msg){
+
+    console.log(msg);
+
+    logArea.textContent +=
+        "[" +
+        new Date().toLocaleTimeString()
+        + "] "
+        + msg + "\n";
+
+    logArea.scrollTop =
+        logArea.scrollHeight;
+}
+
+/*
+==================================================
+ Progress
+==================================================
+*/
+
+function setProgress(p){
+
+    progressBar.style.width =
+        p + "%";
+}
+
+/*
+==================================================
+ ffmpegロード
+==================================================
+*/
+
+async function loadFFmpeg(){
+
+    if(ffmpegLoaded) return;
+
+    log("Loading ffmpeg.wasm...");
+
+    ffmpeg.on("log",({message})=>{
+        log(message);
+    });
+
+    ffmpeg.on("progress",({progress})=>{
+
+        setProgress(
+            Math.floor(progress*100)
+        );
+    });
+
+    await ffmpeg.load();
+
+    ffmpegLoaded = true;
+
+    log("ffmpeg loaded.");
+}
+
+/*
+==================================================
+ Drag
+==================================================
+*/
+
+dropZone.addEventListener(
+"dragover",
+(e)=>{
+    e.preventDefault();
+    dropZone.classList.add("drag");
+});
+
+dropZone.addEventListener(
+"dragleave",
+()=>{
+    dropZone.classList.remove("drag");
+});
+
+dropZone.addEventListener(
+"drop",
+(e)=>{
+    e.preventDefault();
+
+    dropZone.classList.remove("drag");
+
+    handleFiles(
+        [...e.dataTransfer.files]
+    );
+});
+
+fileInput.addEventListener(
+"change",
+(e)=>{
+    handleFiles(
+        [...e.target.files]
+    );
+});
+
+/*
+==================================================
+ ファイル処理
+==================================================
+*/
+
+async function handleFiles(files){
+
+    for(const file of files){
+
+        loadedFiles.push(file);
+
+        log("Loaded: " + file.name);
+
+        const ext =
+            file.name
+            .split(".")
+            .pop()
+            .toLowerCase();
+
+        if(["000","001","002"]
+            .includes(ext)){
+
+            await analyzeBinary(file);
+
+        }else if(
+            ["aac","adts"]
+            .includes(ext)
+        ){
+
+            addRow({
+                file:file.name,
+                title:"",
+                artist:"",
+                album:"",
+                track:""
+            });
+        }
+    }
+}
+
+/*
+==================================================
+ 行追加
+==================================================
+*/
+
+function addRow(data){
+
+    const tr =
+        document.createElement("tr");
+
+    tr.innerHTML = `
+    <td>${escapeHtml(data.file)}</td>
+    <td>${escapeHtml(data.title)}</td>
+    <td>${escapeHtml(data.artist)}</td>
+    <td>${escapeHtml(data.album)}</td>
+    <td>${escapeHtml(data.track)}</td>
+    `;
+
+    tableBody.appendChild(tr);
+}
+
+/*
+==================================================
+ HTML Escape
+==================================================
+*/
+
+function escapeHtml(str=""){
+
+    return str
+    .replace(/&/g,"&amp;")
+    .replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;");
+}
+
+/*
+==================================================
+ HEX表示
+==================================================
+*/
+
+function showHex(buffer){
+
+    const bytes =
+        new Uint8Array(buffer);
+
+    let out = "";
+
+    for(let i=0;i<bytes.length;i+=16){
+
+        let hex = "";
+        let ascii = "";
+
+        for(let j=0;j<16;j++){
+
+            const b = bytes[i+j];
+
+            if(b !== undefined){
+
+                hex +=
+                    b.toString(16)
+                    .padStart(2,"0")
+                    + " ";
+
+                ascii +=
+                    (b >= 32 && b <= 126)
+                    ? String.fromCharCode(b)
+                    : ".";
+
+            }else{
+
+                hex += "   ";
+                ascii += " ";
+            }
+        }
+
+        out +=
+            i.toString(16)
+            .padStart(8,"0")
+            + "  "
+            + hex
+            + " "
+            + ascii
+            + "\n";
+    }
+
+    hexView.textContent = out;
+}
+
+/*
+==================================================
+ UTF16LE
+==================================================
+*/
+
+function decodeUTF16LE(buffer){
+
+    try{
+
+        return new TextDecoder(
+            "utf-16le"
+        ).decode(buffer);
+
+    }catch{
+
+        return "";
+    }
+}
+
+/*
+==================================================
+ Shift_JIS
+==================================================
+*/
+
+function decodeSJIS(buffer){
+
+    try{
+
+        return iconv.decode(
+            new Uint8Array(buffer),
+            "shift_jis"
+        );
+
+    }catch{
+
+        return "";
+    }
+}
+
+/*
+==================================================
+ 文字化け対策
+==================================================
+*/
+
+function cleanText(str){
+
+    return str
+    .replace(/\0/g,"")
+    .replace(/[^\x20-\x7Eぁ-んァ-ヶ一-龯ー！？。、・（）]/g," ")
+    .replace(/\s+/g," ")
+    .trim();
+}
+
+/*
+==================================================
+ strings風抽出
+==================================================
+*/
+
+function extractStrings(buffer){
+
+    const bytes =
+        new Uint8Array(buffer);
+
+    let cur = "";
+
+    const arr = [];
+
+    for(const b of bytes){
+
+        if(b >= 32 && b <= 126){
+
+            cur +=
+                String.fromCharCode(b);
+
+        }else{
+
+            if(cur.length >= 4){
+
+                arr.push(cur);
+            }
+
+            cur = "";
+        }
+    }
+
+    return arr;
+}
+
+/*
+==================================================
+ メタデータ抽出
+==================================================
+*/
+
+function extractMeta(text){
+
+    const result = {
+        title:"",
+        artist:"",
+        album:"",
+        track:""
+    };
+
+    const songs = [
+        "sakura",
+        "心の空",
+        "君への想い",
+        "Don't you love me?",
+        "miyabi-night",
+        "三日月",
+        "青空の下、キミのとなり",
+        "嵐",
+        "Japonism"
+    ];
+
+    for(const s of songs){
+
+        if(text.includes(s)){
+
+            result.title = s;
+        }
+    }
+
+    if(text.includes("嵐")){
+
+        result.artist = "嵐";
+    }
+
+    if(text.includes("Japonism")){
+
+        result.album = "Japonism";
+    }
+
+    const track =
+        text.match(/Track\s*(\d+)/i);
+
+    if(track){
+
+        result.track = track[1];
+    }
+
+    return result;
+}
+
+/*
+==================================================
+ ブロック解析
+==================================================
+*/
+
+function analyzeBlocks(buffer){
+
+    const sizes =
+        [128,256,512];
+
+    const bytes =
+        new Uint8Array(buffer);
+
+    for(const size of sizes){
+
+        log("=== BLOCK " + size + " ===");
+
+        for(let i=0;i<bytes.length;i+=size){
+
+            const block =
+                bytes.slice(i,i+size);
+
+            const text =
+                cleanText(
+                    decodeUTF16LE(
+                        block.buffer
+                    )
+                );
+
+            if(text.length > 5){
+
+                log(
+                    "OFFSET "
+                    + i
+                    + " : "
+                    + text.slice(0,80)
+                );
+            }
+        }
+    }
+}
+
+/*
+==================================================
+ バイナリ解析
+==================================================
+*/
+
+async function analyzeBinary(file){
+
+    log("Analyzing: " + file.name);
+
+    const buffer =
+        await file.arrayBuffer();
+
+    showHex(buffer);
+
+    const detect =
+        jschardet.detect(
+            new TextDecoder()
+            .decode(buffer)
+        );
+
+    log(
+        "Encoding Guess: "
+        + JSON.stringify(detect)
+    );
+
+    const utf16 =
+        cleanText(
+            decodeUTF16LE(buffer)
+        );
+
+    const sjis =
+        cleanText(
+            decodeSJIS(buffer)
+        );
+
+    const strings =
+        extractStrings(buffer)
+        .join("\n");
+
+    log("=== UTF16LE ===");
+    log(utf16.slice(0,1000));
+
+    log("=== SJIS ===");
+    log(sjis.slice(0,1000));
+
+    log("=== STRINGS ===");
+    log(strings.slice(0,1000));
+
+    analyzeBlocks(buffer);
+
+    const meta =
+        extractMeta(
+            utf16
+            + "\n"
+            + sjis
+            + "\n"
+            + strings
+        );
+
+    addRow({
+        file:file.name,
+        ...meta
+    });
+}
+
+/*
+==================================================
+ MP3変換
+==================================================
+*/
+
+document
+.getElementById("convertBtn")
+.addEventListener(
+"click",
+async()=>{
+
+try{
+
+    await loadFFmpeg();
+
+    const audioFiles =
+        loadedFiles.filter(f=>
+            /\.(aac|adts)$/i
+            .test(f.name)
+        );
+
+    let index = 0;
+
+    for(const file of audioFiles){
+
+        index++;
+
+        log("Converting: " + file.name);
+
+        const input =
+            file.name;
+
+        const output =
+            file.name.replace(
+                /\.[^.]+$/,
+                ".mp3"
+            );
+
+        await ffmpeg.writeFile(
+            input,
+            await fetchFile(file)
+        );
+
+        await ffmpeg.exec([
+            "-i",
+            input,
+            "-codec:a",
+            "libmp3lame",
+            "-q:a",
+            "2",
+            output
+        ]);
+
+        const data =
+            await ffmpeg.readFile(
+                output
+            );
+
+        /*
+        ID3
+        */
+
+        const writer =
+            new ID3Writer(
+                data.buffer
+            );
+
+        writer
+        .setFrame("TIT2",output)
+        .setFrame("TPE1",["Unknown"])
+        .setFrame("TALB","Converted")
+        .addTag();
+
+        const blob =
+            writer.getBlob();
+
+        convertedFiles.push({
+            name:output,
+            blob
+        });
+
+        zip.file(
+            output,
+            blob
+        );
+
+        /*
+        DL
+        */
+
+        const a =
+            document.createElement("a");
+
+        a.href =
+            URL.createObjectURL(blob);
+
+        a.download = output;
+
+        a.click();
+
+        setProgress(
+            Math.floor(
+                (index/audioFiles.length)
+                *100
+            )
+        );
+
+        log("Converted: " + output);
+    }
+
+    log("All complete.");
+
+}catch(err){
+
+    console.error(err);
+
+    log("ERROR: " + err.message);
+
+    alert(err.message);
+}
+
+});
+
+/*
+==================================================
+ ZIP
+==================================================
+*/
+
+document
+.getElementById("zipBtn")
+.addEventListener(
+"click",
+async()=>{
+
+    if(convertedFiles.length === 0){
+
+        alert("先に変換してください");
+        return;
+    }
+
+    const blob =
+        await zip.generateAsync({
+            type:"blob"
+        });
+
+    const a =
+        document.createElement("a");
+
+    a.href =
+        URL.createObjectURL(blob);
+
+    a.download =
+        "converted_mp3.zip";
+
+    a.click();
+
+    log("ZIP saved.");
+});
+
+/*
+==================================================
+ Clear
+==================================================
+*/
+
+document
+.getElementById("clearBtn")
+.addEventListener(
+"click",
+()=>{
+
+    loadedFiles = [];
+    convertedFiles = [];
+
+    tableBody.innerHTML = "";
+    logArea.textContent = "";
+    hexView.textContent = "";
+
+    setProgress(0);
+
+    log("Cleared.");
+});
+
+/*
+==================================================
+ 初期
+==================================================
+*/
+
+log("Ready.");
+log("IMPORTANT:");
+log("file:// ではなく");
+log("http://localhost で開いてください");
+
+</script>
+
+</body>
+</html>
